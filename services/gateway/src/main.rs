@@ -1,0 +1,40 @@
+use std::{env, sync::Arc};
+
+use gateway::{router, GatewayConfig, JwtManager, PostgresUserStore, UserStore, WeChatClient};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
+    // Production should set GATEWAY_CONFIG explicitly; the default keeps local
+    // development simple when running from the repository root.
+    let config_path = env::var("GATEWAY_CONFIG").unwrap_or_else(|_| "gateway.toml".to_string());
+    let config = GatewayConfig::from_file(config_path)?.resolve()?;
+
+    let store = PostgresUserStore::connect(&config.database_url).await?;
+    // Migrations run at process start so a fresh database can boot without a
+    // separate migration command in the first version of the service.
+    sqlx::migrate!("./migrations").run(store.pool()).await?;
+
+    let store: Arc<dyn UserStore> = Arc::new(store);
+    let state = gateway::AppState::new(
+        store,
+        WeChatClient::new(
+            config.wechat_app_id,
+            config.wechat_app_secret,
+            config.wechat_api_base,
+        ),
+        JwtManager::new(config.jwt_secret, config.jwt_ttl_seconds),
+        config.upstreams,
+    );
+
+    let listener = tokio::net::TcpListener::bind(config.bind).await?;
+    tracing::info!(bind = %config.bind, "gateway listening");
+    axum::serve(listener, router(state)).await?;
+
+    Ok(())
+}

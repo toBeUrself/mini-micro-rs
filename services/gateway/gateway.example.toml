@@ -1,0 +1,17 @@
+[server]
+bind = "127.0.0.1:8080"
+
+[wechat]
+app_id = "wx-your-mini-program-app-id"
+app_secret_env = "WECHAT_APP_SECRET"
+
+[jwt]
+secret_env = "GATEWAY_JWT_SECRET"
+ttl_seconds = 604800
+
+[database]
+url_env = "DATABASE_URL"
+
+[[upstreams]]
+prefix = "/api/v1"
+base_url = "http://127.0.0.1:9000"
