@@ -102,6 +102,7 @@ pub struct PhoneWatermark {
 }
 
 impl WeChatClient {
+    // 创建客户端
     pub fn new(
         app_id: impl Into<String>,
         app_secret: impl Into<String>,

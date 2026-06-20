@@ -8,10 +8,12 @@ use thiserror::Error;
 
 use crate::{jwt::JwtError, store::StoreError, wechat::WeChatError};
 
+// 这个文件解决一个问题：不同模块会产生不同错误，HTTP API 最后必须统一返回状态码和 JSON
+
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error("bad request: {0}")]
-    BadRequest(String),
+    BadRequest(String), // 带括号的 variant 可以携带数据，比如 BadRequest(String) 会带一段错误信息。
     #[error("unauthorized")]
     Unauthorized,
     #[error("not found")]
@@ -30,8 +32,10 @@ struct ErrorBody {
     message: String,
 }
 
+// 把 ApiError 变成 HTTP 响应
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // match 类似其他语言里的 switch，但 Rust 要求覆盖所有情况。
         let (status, code, message) = match self {
             ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, "bad_request", message),
             ApiError::Unauthorized => (
@@ -65,6 +69,14 @@ impl IntoResponse for ApiError {
             .into_response()
     }
 }
+
+/// 为什么 handler 里的 ? 能自动变成 ApiError
+//
+// impl From<StoreError> for ApiError
+// impl From<JwtError> for ApiError
+// impl From<WeChatError> for ApiError
+//
+// 这些实现定义了错误转换规则。
 
 impl From<StoreError> for ApiError {
     fn from(error: StoreError) -> Self {

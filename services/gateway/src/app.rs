@@ -23,6 +23,8 @@ use crate::{
 ///
 /// The concrete storage implementation is hidden behind `UserStore` so handler
 /// tests can use an in-memory store while production uses Postgres.
+// AppState：所有 handler 共享的依赖
+// pub 完全公开，其他crate也可以访问，pub(crate)只限当前crate访问
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) store: Arc<dyn UserStore>,
@@ -32,6 +34,13 @@ pub struct AppState {
     pub(crate) http: reqwest::Client,
 }
 
+// 请求和响应 struct
+// 这表示请求 JSON 长这样：
+
+//  {
+//    "code": "xxx"
+//  }
+// Deserialize 的意思是：可以从 JSON 反序列化成 Rust struct。
 #[derive(Debug, Deserialize)]
 struct WeChatLoginRequest {
     code: String,
@@ -48,9 +57,10 @@ struct BindPhoneRequest {
     code: String,
 }
 
+// Serialize 的意思是：可以从 Rust struct 序列化成 JSON。
 #[derive(Debug, Serialize)]
 struct AuthResponse {
-    token_type: &'static str,
+    token_type: &'static str, // &'static str 先简单理解成“程序整个生命周期都有效的字符串字面量”，这里就是固定返回 "Bearer"。
     access_token: String,
     expires_in: i64,
     user: UserResponse,
@@ -87,23 +97,26 @@ impl AppState {
     }
 }
 
+// router(state)：注册路由
 pub fn router(state: AppState) -> Router {
     Router::new()
-        .route("/healthz", get(healthz))
-        .route("/api/v1/auth/wechat-login", post(wechat_login))
+        .route("/healthz", get(healthz)) // GET /healthz 调 healthz
+        .route("/api/v1/auth/wechat-login", post(wechat_login)) // POST /api/v1/auth/wechat-login 调 wechat_login
         .route("/api/v1/auth/wechat-phone-login", post(wechat_phone_login))
         .route("/api/v1/auth/bind-phone", post(bind_phone))
-        .fallback(proxy_request)
-        .with_state(state)
+        .fallback(proxy_request) // 其他没匹配上的请求走 proxy_request
+        .with_state(state) // 把共享依赖挂到整个 Router 上
 }
 
+// 最简单 handler：healthz
 async fn healthz() -> StatusCode {
-    StatusCode::OK
+    StatusCode::OK // 它没有请求体，也不需要 state，直接返回 200 OK。
 }
 
+// 微信登录 handler
 async fn wechat_login(
-    State(state): State<AppState>,
-    Json(request): Json<WeChatLoginRequest>,
+    State(state): State<AppState>, // Json<WeChatLoginRequest> 表示：告诉 axum：这个参数要从 HTTP 请求体里按 JSON 格式提取出来。
+    Json(request): Json<WeChatLoginRequest>, // #[derive(Deserialize)] 表示：这个 struct 具备“从 JSON 数据反序列化成 Rust 对象”的能力。
 ) -> Result<Json<AuthResponse>, ApiError> {
     ensure_non_empty(&request.code, "code")?;
 
@@ -153,6 +166,7 @@ async fn bind_phone(
     issue_auth_response(&state, user)
 }
 
+// 小工具函数：统一签发登录响应
 fn issue_auth_response(state: &AppState, user: User) -> Result<Json<AuthResponse>, ApiError> {
     let issued = state.jwt.issue(user.id)?;
     Ok(Json(AuthResponse {

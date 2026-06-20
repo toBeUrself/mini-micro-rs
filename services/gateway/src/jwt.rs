@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct JwtManager {
-    secret: Arc<str>,
-    ttl: Duration,
+    secret: Arc<str>, // JWT 签名密钥
+    ttl: Duration,    // token 有效期，比如 7 天
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,9 +22,9 @@ pub struct IssuedToken {
 pub struct Claims {
     /// Business user id. We keep user state out of the token and reload it from
     /// storage before proxying so phone/openid binding changes take effect.
-    pub sub: String,
-    pub iat: usize,
-    pub exp: usize,
+    pub sub: String, // subject，这里放业务用户 id。
+    pub iat: usize, // issued at，签发时间。
+    pub exp: usize, // expires at，过期时间。
 }
 
 #[derive(Debug, Error)]
@@ -45,6 +45,7 @@ impl JwtManager {
         }
     }
 
+    // issue：签发 token
     pub fn issue(&self, user_id: Uuid) -> Result<IssuedToken, JwtError> {
         let now = Utc::now();
         let expires_at = now + self.ttl;
@@ -67,6 +68,7 @@ impl JwtManager {
         })
     }
 
+    // 验证 token
     pub fn verify(&self, token: &str) -> Result<Uuid, JwtError> {
         let mut validation = Validation::new(Algorithm::HS256);
         // Keep expiry strict; clients should refresh via WeChat login instead

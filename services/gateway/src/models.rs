@@ -2,6 +2,10 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
+// Debug：可以调试打印。
+// Clone：可以克隆。
+// Serialize：可以转成 JSON。
+// sqlx::FromRow：可以从 SQL 查询结果行转换成 User。
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct User {
     pub id: Uuid,
@@ -16,6 +20,7 @@ pub struct User {
 }
 
 impl User {
+    // 这个用户是否已经绑定 openid？
     pub fn openid_bound(&self) -> bool {
         self.openid.is_some()
     }

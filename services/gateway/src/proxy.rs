@@ -13,7 +13,7 @@ pub async fn proxy_request(
     request: Request<Body>,
 ) -> Result<Response<Body>, ApiError> {
     let (parts, body) = request.into_parts();
-    let user = state.authenticated_user(&parts.headers).await?;
+    let user = state.authenticated_user(&parts.headers).await?; // 通常 1ms - 5ms 以内，速度很快，不影响性能
     let path = parts.uri.path();
     // More-specific prefixes win so `/api/v1/orders` can override `/api/v1`.
     let upstream = state
@@ -37,6 +37,7 @@ pub async fn proxy_request(
         .await
         .map_err(|error| ApiError::Upstream(error.to_string()))?;
 
+    // 创建发往 upstream 的请求
     let mut request_builder = state.http.request(parts.method, url);
     let forwarded_headers = sanitized_request_headers(&parts.headers, &user);
     for (name, value) in &forwarded_headers {
