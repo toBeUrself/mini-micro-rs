@@ -6,34 +6,51 @@ use thiserror::Error;
 
 use crate::{config::interval_minutes, models::Kline};
 
+/// K 线聚合过程中可能出现的错误。
 #[derive(Debug, Error)]
 pub enum AggregateError {
+    /// 源周期格式不合法。
     #[error("invalid source interval: {0}")]
     InvalidSourceInterval(String),
+    /// 目标周期格式不合法。
     #[error("invalid target interval: {0}")]
     InvalidTargetInterval(String),
+    /// 目标周期必须是源周期的整数倍，比如 5m 可以由 1m 聚合，但 7m 不能由 5m 聚合。
     #[error("target interval {target} must be a multiple of source interval {source_interval}")]
     TargetIntervalNotMultiple {
         source_interval: String,
         target: String,
     },
+    /// 目标周期必须比源周期更长。
     #[error("target interval {target} must be longer than source interval {source_interval}")]
     TargetIntervalNotLonger {
         source_interval: String,
         target: String,
     },
+    /// 分桶后的时间戳无效，正常情况下很少出现。
     #[error("invalid bucket timestamp millis: {0}")]
     InvalidBucketTimestamp(i64),
 }
 
+/// 把一组源 K 线聚合成目标周期 K 线。
+///
+/// 例如把多根 `1m` 聚合成 `5m`：
+/// - open = 第一根 1m 的 open
+/// - close = 最后一根 1m 的 close
+/// - high = 所有 1m 的最高 high
+/// - low = 所有 1m 的最低 low
+/// - volume = 所有 1m 成交量求和
 pub fn aggregate_klines(
     source_klines: &[Kline],
     target_interval: &str,
 ) -> Result<Vec<Kline>, AggregateError> {
+    // 没有源数据时直接返回空数组，不算错误。
     if source_klines.is_empty() {
         return Ok(Vec::new());
     }
 
+    // 当前实现假设传入的 source_klines 都是同一个 interval。
+    // 调用方在 worker 里按 source/symbol/interval 查询，已经保证了这一点。
     let source_interval = &source_klines[0].interval;
     let source_minutes = interval_minutes(source_interval)
         .ok_or_else(|| AggregateError::InvalidSourceInterval(source_interval.clone()))?;
@@ -56,16 +73,20 @@ pub fn aggregate_klines(
     let expected_count = (target_minutes / source_minutes) as i32;
     let mut buckets: BTreeMap<DateTime<Utc>, Vec<&Kline>> = BTreeMap::new();
     for kline in source_klines {
+        // 先算出这根源 K 线属于哪个目标周期窗口。
+        // 例如 10:07 的 1m 属于 10:05 这个 5m 窗口。
         let bucket_start = bucket_start(kline.open_time, target_minutes)?;
         buckets.entry(bucket_start).or_default().push(kline);
     }
 
     let mut aggregated = Vec::with_capacity(buckets.len());
     for (open_time, mut rows) in buckets {
+        // Binance 返回顺序和数据库查询顺序都可能变化，所以聚合前强制按时间排序。
         rows.sort_by_key(|row| row.open_time);
         let first = rows[0];
         let last = rows[rows.len() - 1];
 
+        // Decimal 实现了 Ord，所以可以直接用 max/min。
         let high_price = rows
             .iter()
             .map(|row| row.high_price)
@@ -98,6 +119,7 @@ pub fn aggregate_klines(
             base_volume,
             quote_volume,
             source_count,
+            // source_count 等于理论数量时，说明窗口完整。
             source_count == expected_count,
         ));
     }
@@ -105,12 +127,19 @@ pub fn aggregate_klines(
     Ok(aggregated)
 }
 
+/// 计算某个时间点所属的聚合窗口开始时间。
+///
+/// 例如：
+/// - `10:07` + `5m` -> `10:05`
+/// - `10:41` + `30m` -> `10:30`
 pub fn bucket_start(
     open_time: DateTime<Utc>,
     interval_minutes: i64,
 ) -> Result<DateTime<Utc>, AggregateError> {
+    // 全部转成毫秒做整数除法，避免浮点计算。
     let interval_millis = interval_minutes * 60 * 1000;
     let timestamp_millis = open_time.timestamp_millis();
+    // div_euclid 是欧几里得除法，对负时间戳也更稳健。
     let bucket_millis = timestamp_millis.div_euclid(interval_millis) * interval_millis;
     Utc.timestamp_millis_opt(bucket_millis)
         .single()
