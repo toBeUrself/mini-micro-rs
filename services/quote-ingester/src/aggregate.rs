@@ -129,8 +129,8 @@ mod tests {
 
     fn kline(minute: u32, open: &str, high: &str, low: &str, close: &str, volume: &str) -> Kline {
         Kline::new(
-            "azverse",
-            "btc_usdt",
+            "binance",
+            "BTCUSDT",
             "1m",
             Utc.with_ymd_and_hms(2026, 6, 21, 10, minute, 0).unwrap(),
             decimal(open),

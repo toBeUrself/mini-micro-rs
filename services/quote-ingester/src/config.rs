@@ -205,11 +205,11 @@ fn required_env(name: &str) -> Result<String, ConfigError> {
 }
 
 fn default_source() -> String {
-    "azverse".to_string()
+    "binance".to_string()
 }
 
 fn default_base_url() -> String {
-    "https://app.azverse.xyz".to_string()
+    "https://www.binance.com".to_string()
 }
 
 fn default_timeout_seconds() -> u64 {
@@ -221,7 +221,7 @@ fn default_source_interval() -> String {
 }
 
 fn default_limit() -> u32 {
-    500
+    1000
 }
 
 fn default_poll_seconds() -> u64 {
@@ -258,14 +258,14 @@ mod tests {
             url_env = "DATABASE_URL"
 
             [quote_api]
-            source = "azverse"
-            base_url = "https://app.azverse.xyz"
+            source = "binance"
+            base_url = "https://www.binance.com"
             timeout_seconds = 10
 
             [[markets]]
-            symbol = "btc_usdt"
+            symbol = "BTCUSDT"
             source_interval = "1m"
-            limit = 500
+            limit = 1000
             poll_seconds = 20
             backfill_days = 30
             derived_intervals = ["5m", "30m"]
@@ -274,13 +274,13 @@ mod tests {
         .expect("config should parse");
 
         assert_eq!(config.database.url_env, "DATABASE_URL");
-        assert_eq!(config.quote_api.source, "azverse");
+        assert_eq!(config.quote_api.source, "binance");
         assert_eq!(
             config.markets,
             vec![MarketConfig {
-                symbol: "btc_usdt".to_string(),
+                symbol: "BTCUSDT".to_string(),
                 source_interval: "1m".to_string(),
-                limit: 500,
+                limit: 1000,
                 poll_seconds: 20,
                 backfill_days: 30,
                 derived_intervals: vec!["5m".to_string(), "30m".to_string()],
@@ -296,7 +296,7 @@ mod tests {
             url_env = "DATABASE_URL"
 
             [[markets]]
-            symbol = "btc_usdt"
+            symbol = "BTCUSDT"
             source_interval = "5m"
             derived_intervals = ["1m"]
             "#,

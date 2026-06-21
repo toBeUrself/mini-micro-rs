@@ -426,8 +426,8 @@ mod tests {
 
     fn test_kline(open_time: DateTime<Utc>) -> Kline {
         Kline::new(
-            "azverse",
-            "btc_usdt",
+            "binance",
+            "BTCUSDT",
             "1m",
             open_time,
             rust_decimal::Decimal::ONE,

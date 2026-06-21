@@ -2,14 +2,14 @@
 url_env = "DATABASE_URL"
 
 [quote_api]
-source = "azverse"
-base_url = "https://app.azverse.xyz"
+source = "binance"
+base_url = "https://www.binance.com"
 timeout_seconds = 10
 
 [[markets]]
-symbol = "btc_usdt"
+symbol = "BTCUSDT"
 source_interval = "1m"
-limit = 500
+limit = 1000
 poll_seconds = 20
 backfill_days = 30
 derived_intervals = ["5m", "30m"]
