@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = PostgresUserStore::connect(&config.database_url).await?;
     // Migrations run at process start so a fresh database can boot without a
     // separate migration command in the first version of the service.
-    sqlx::migrate!("./migrations").run(store.pool()).await?;
+    sqlx::migrate!("../../migrations").run(store.pool()).await?;
 
     // 把具体 store 包成 trait object
     let store: Arc<dyn UserStore> = Arc::new(store);

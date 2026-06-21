@@ -1,0 +1,15 @@
+[database]
+url_env = "DATABASE_URL"
+
+[quote_api]
+source = "azverse"
+base_url = "https://app.azverse.xyz"
+timeout_seconds = 10
+
+[[markets]]
+symbol = "btc_usdt"
+source_interval = "1m"
+limit = 500
+poll_seconds = 20
+backfill_days = 30
+derived_intervals = ["5m", "30m"]

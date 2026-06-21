@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::models::{User, VerifiedPhoneNumber};
 
+// 定义“用户存储”应该有哪些能力
 #[async_trait]
 pub trait UserStore: Send + Sync {
     async fn find_or_create_by_wechat(
@@ -29,6 +30,7 @@ pub trait UserStore: Send + Sync {
     async fn get_by_id(&self, user_id: Uuid) -> Result<Option<User>, StoreError>;
 }
 
+// 定义数据库层错误
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("account conflict")]
@@ -39,6 +41,7 @@ pub enum StoreError {
     Database(#[from] sqlx::Error),
 }
 
+// 真正用 Postgres 实现这些能力
 #[derive(Clone)]
 pub struct PostgresUserStore {
     pool: PgPool,
@@ -64,6 +67,7 @@ impl PostgresUserStore {
 
 #[async_trait]
 impl UserStore for PostgresUserStore {
+    // 通过微信 openid 找用户；没有就创建。
     async fn find_or_create_by_wechat(
         &self,
         openid: &str,
@@ -81,13 +85,14 @@ impl UserStore for PostgresUserStore {
                       phone_number, phone_verified_at, created_at, updated_at
             "#,
         )
-        .bind(openid)
-        .bind(unionid)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(map_sqlx_error)
+        .bind(openid) // 把 openid 绑定到 SQL 里的 $1。
+        .bind(unionid) // 把 unionid 绑定到 SQL 里的 $2。
+        .fetch_one(&self.pool) // 期望数据库返回一行。
+        .await // 等待数据库执行完成。
+        .map_err(map_sqlx_error) // 如果出错，把 sqlx 错误转换成 StoreError。
     }
 
+    // 通过微信登录，同时绑定手机号。
     async fn find_or_create_by_wechat_and_bind_phone(
         &self,
         openid: &str,
@@ -149,6 +154,7 @@ impl UserStore for PostgresUserStore {
         Ok(user)
     }
 
+    // 给已有用户绑定手机号。
     async fn bind_phone(
         &self,
         user_id: Uuid,
@@ -197,6 +203,7 @@ impl UserStore for PostgresUserStore {
         Ok(user)
     }
 
+    // 通过 user_id 查询用户。
     async fn get_by_id(&self, user_id: Uuid) -> Result<Option<User>, StoreError> {
         sqlx::query_as::<_, User>(
             r#"
