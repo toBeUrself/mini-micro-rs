@@ -380,6 +380,46 @@ mod tests {
         assert!(body.get("x-user-role").is_none());
     }
 
+    #[tokio::test]
+    async fn public_route_skips_auth() {
+        let (app, _, _) = test_app_with_upstream().await;
+
+        // 路径中包含 /public/ 段的公开 API 无需 JWT 即可访问。
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/public/market/klines")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        // 公开路径不注入用户身份 header。
+        assert!(body.get("x-gateway-authenticated").is_none());
+        assert!(body.get("x-user-id").is_none());
+    }
+
+    #[tokio::test]
+    async fn non_public_route_still_requires_jwt() {
+        let (app, _, _) = test_app_with_upstream().await;
+
+        // 路径中不含 /public/ 段，仍需要 JWT。
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/orders")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
     async fn test_app() -> (Router, Arc<MemoryUserStore>, JwtManager) {
         let wechat_api_base = spawn_wechat_mock().await;
         build_test_app(vec![], wechat_api_base)

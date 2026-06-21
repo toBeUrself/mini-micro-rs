@@ -13,7 +13,6 @@ pub async fn proxy_request(
     request: Request<Body>,
 ) -> Result<Response<Body>, ApiError> {
     let (parts, body) = request.into_parts();
-    let user = state.authenticated_user(&parts.headers).await?; // 通常 1ms - 5ms 以内，速度很快，不影响性能
     let path = parts.uri.path();
     // More-specific prefixes win so `/api/v1/orders` can override `/api/v1`.
     let upstream = state
@@ -22,6 +21,14 @@ pub async fn proxy_request(
         .filter(|upstream| path_matches_prefix(path, &upstream.prefix))
         .max_by_key(|upstream| upstream.prefix.len())
         .ok_or(ApiError::NotFound)?;
+
+    // 路径中包含 /public/ 段的为公开 API，不需要鉴权。
+    let is_public = path.split('/').any(|seg| seg == "public");
+    let user: Option<User> = if is_public {
+        None
+    } else {
+        Some(state.authenticated_user(&parts.headers).await?)
+    };
 
     let path_and_query = parts
         .uri
@@ -39,7 +46,7 @@ pub async fn proxy_request(
 
     // 创建发往 upstream 的请求
     let mut request_builder = state.http.request(parts.method, url);
-    let forwarded_headers = sanitized_request_headers(&parts.headers, &user);
+    let forwarded_headers = sanitized_request_headers(&parts.headers, user.as_ref());
     for (name, value) in &forwarded_headers {
         request_builder = request_builder.header(name, value);
     }
@@ -73,7 +80,7 @@ pub async fn proxy_request(
     Ok(response)
 }
 
-pub fn sanitized_request_headers(source: &HeaderMap, user: &User) -> HeaderMap {
+pub fn sanitized_request_headers(source: &HeaderMap, user: Option<&User>) -> HeaderMap {
     let mut headers = HeaderMap::new();
     for (name, value) in source {
         if should_forward_request_header(name) {
@@ -81,28 +88,30 @@ pub fn sanitized_request_headers(source: &HeaderMap, user: &User) -> HeaderMap {
         }
     }
 
-    // Identity headers are generated from the verified gateway user only. Any
-    // client-supplied x-user-* or x-wechat-* headers are stripped below.
-    headers.insert(
-        HeaderName::from_static("x-gateway-authenticated"),
-        HeaderValue::from_static("true"),
-    );
-    headers.insert(
-        HeaderName::from_static("x-user-id"),
-        HeaderValue::from_str(&user.id.to_string()).expect("UUID is a valid header value"),
-    );
-    headers.insert(
-        HeaderName::from_static("x-openid-bound"),
-        HeaderValue::from_static(if user.openid_bound() { "true" } else { "false" }),
-    );
-    headers.insert(
-        HeaderName::from_static("x-phone-verified"),
-        HeaderValue::from_static(if user.phone_verified() {
-            "true"
-        } else {
-            "false"
-        }),
-    );
+    if let Some(user) = user {
+        // Identity headers are generated from the verified gateway user only. Any
+        // client-supplied x-user-* or x-wechat-* headers are stripped below.
+        headers.insert(
+            HeaderName::from_static("x-gateway-authenticated"),
+            HeaderValue::from_static("true"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-user-id"),
+            HeaderValue::from_str(&user.id.to_string()).expect("UUID is a valid header value"),
+        );
+        headers.insert(
+            HeaderName::from_static("x-openid-bound"),
+            HeaderValue::from_static(if user.openid_bound() { "true" } else { "false" }),
+        );
+        headers.insert(
+            HeaderName::from_static("x-phone-verified"),
+            HeaderValue::from_static(if user.phone_verified() {
+                "true"
+            } else {
+                "false"
+            }),
+        );
+    }
 
     headers
 }
@@ -173,7 +182,7 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        let sanitized = sanitized_request_headers(&source, &user);
+        let sanitized = sanitized_request_headers(&source, Some(&user));
 
         assert_eq!(
             sanitized.get("x-request-id"),
@@ -198,6 +207,24 @@ mod tests {
         assert!(sanitized.get("authorization").is_none());
         assert!(sanitized.get("x-user-role").is_none());
         assert!(sanitized.get("x-wechat-openid").is_none());
+    }
+
+    #[test]
+    fn public_path_omits_identity_headers() {
+        let mut source = HeaderMap::new();
+        source.insert("x-request-id", HeaderValue::from_static("request-1"));
+
+        let sanitized = sanitized_request_headers(&source, None);
+
+        // 公开路径透传普通 header，但不注入用户身份 header。
+        assert_eq!(
+            sanitized.get("x-request-id"),
+            Some(&HeaderValue::from_static("request-1"))
+        );
+        assert!(sanitized.get("x-gateway-authenticated").is_none());
+        assert!(sanitized.get("x-user-id").is_none());
+        assert!(sanitized.get("x-openid-bound").is_none());
+        assert!(sanitized.get("x-phone-verified").is_none());
     }
 
     #[test]
