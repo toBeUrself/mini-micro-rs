@@ -1,0 +1,80 @@
+# klines-tools 分析服务配置
+bind = "127.0.0.1:8081"
+app_api_base_url = "http://127.0.0.1:8080"
+http_timeout_secs = 30
+default_source = "binance"
+
+[features]
+enable_multi_timeframe = false
+enable_donchian = false
+enable_percent_b = true
+enable_ema20_deviation = true
+enable_score_momentum = false
+enable_score_conflict_adjustment = true
+enable_fake_breakout_filter = false
+enable_exchange_constraints = false
+enable_keltner = false
+enable_obv = false
+enable_vwap_deviation = false
+enable_ml_classifier = false
+enable_orderbook_features = false
+
+[indicator]
+boll_period = 20
+boll_mult = 2.0
+macd_fast = 12
+macd_slow = 26
+macd_signal = 9
+atr_period = 14
+adx_period = 14
+rsi_period = 14
+volume_ma_period = 20
+donchian_period = 20
+score_smooth_period = 3
+percentile_window = 1000
+percentile_min_samples = 100
+pivot_left = 2
+pivot_right = 2
+structure_lookback = 20
+
+[state]
+range_enter = 65
+range_exit = 55
+warning_enter = 55
+warning_exit = 45
+trend_candidate = 70
+trend_confirm = 80
+confirm_bars = 3
+fake_breakout_window = 3
+breakout_volume_confirm_threshold = 1.5
+cooldown_bars_after_exit = 5
+cooldown_bars_after_stop_loss = 20
+
+[grid]
+grid_count = 20
+boundary_mode = "boll"
+min_profit_buffer = 0.001
+fee_rate = 0.001
+expected_slippage_rate = 0.0005
+max_grid_width_by_percent = 0.08
+max_grid_width_by_atr = 6.0
+max_capital_usage_at_lower_bound = 0.5
+
+[risk]
+max_position_ratio = 0.3
+max_grid_capital = 1000
+max_loss_per_symbol = 0.03
+max_daily_loss = 0.05
+max_drawdown = 0.1
+default_reduce_position_ratio = 0.3
+
+[data_quality]
+max_latest_delay_intervals = 2
+max_missing_kline_ratio = 0.01
+min_quality_score_for_grid = 0.9
+
+[multi_timeframe]
+mode = "normal_grid"
+higher_interval = "4h"
+middle_interval = "30m"
+lower_interval = "5m"

@@ -2,8 +2,10 @@
 resolver = "2"
 
 members = [
+    "crates/indicators",
     "services/app-api",
     "services/gateway",
+    "services/klines-tools",
     "services/quote-ingester"
 ]
 

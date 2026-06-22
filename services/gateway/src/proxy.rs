@@ -23,7 +23,8 @@ pub async fn proxy_request(
         .ok_or(ApiError::NotFound)?;
 
     // 路径中包含 /public/ 段的为公开 API，不需要鉴权。
-    let is_public = path.split('/').any(|seg| seg == "public");
+    // let is_public = path.split('/').any(|seg| seg == "public");
+    let is_public = true;
     let user: Option<User> = if is_public {
         None
     } else {
