@@ -7,19 +7,25 @@ use crate::{
     data_validator, kline_reader::KlineReader,
     models::*,
     scoring, state_machine, risk, confidence, grid_plan, signal, output, multi_tf,
+    state_store::StateContextStore,
 };
 
-/// 分析器：持有配置和 K 线读取器。
+/// 分析器：持有配置、K 线读取器和跨请求状态存储。
+///
+/// Clone 会共享同一个 StateContextStore（通过 Arc），
+/// 确保 confirm_bars/cooldown 在所有 handler 间一致。
 #[derive(Clone)]
 pub struct Analyzer {
     pub config: KlinesToolsConfig,
     pub reader: KlineReader,
+    /// 跨请求的 StateContext 存储，Arc 保证多 handler 共享同一份状态。
+    pub state_store: std::sync::Arc<StateContextStore>,
 }
 
 impl Analyzer {
     /// 创建分析器。
     pub fn new(config: KlinesToolsConfig, reader: KlineReader) -> Self {
-        Self { config, reader }
+        Self { config, reader, state_store: std::sync::Arc::new(StateContextStore::new()) }
     }
 
     /// 执行单周期完整分析。
@@ -194,8 +200,9 @@ impl Analyzer {
         };
         let momentum = scoring::score_momentum(&smoothed_scores, &prev_smoothed);
 
-        // 8. 状态机
-        let mut ctx = state_machine::new_state_context();
+        // 8. 状态机：从持久化存储获取上下文，使 confirm_bars/cooldown 跨请求生效
+        let config_hash = self.config.config_hash();
+        let mut ctx = self.state_store.get_or_create(source, symbol, interval, &config_hash);
         let closed_klines_for_sm: Vec<(i64, f64, f64, f64, f64)> = klines
             .iter()
             .filter(|k| k.is_closed)
@@ -218,6 +225,9 @@ impl Analyzer {
 
         let state = transition.final_state;
         let state_phase = transition.final_state_phase;
+
+        // 持久化 StateContext，使候选计数/冷却期跨请求生效
+        self.state_store.save(source, symbol, interval, &config_hash, &ctx);
 
         // 9. RiskOverride 评估（仅数据质量+指标可用性，账户硬止损由外部传入）
         let risk_override = risk::evaluate_override(&data_quality, indicator_ready);

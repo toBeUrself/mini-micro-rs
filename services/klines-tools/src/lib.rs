@@ -32,6 +32,7 @@ pub mod risk;
 pub mod scoring;
 pub mod signal;
 pub mod state_machine;
+pub mod state_store;
 
 pub use analyzer::Analyzer;
 pub use config::KlinesToolsConfig;

@@ -52,8 +52,9 @@ pub fn advance_state(
 ) -> StateTransition {
     let mut reasons: Vec<String> = Vec::new();
 
-    // 同步 config 到 context
+    // 同步 config 到 context，记录本次推进时间
     ctx.required_confirm_bars = sc.confirm_bars;
+    ctx.last_transition_time = Some(::chrono::Utc::now().timestamp_millis());
 
     // ── P0：数据质量严重不足 ──────────────────────────────────────────
     if !data_quality.warmup_satisfied || data_quality.quality_score < 0.5 {
