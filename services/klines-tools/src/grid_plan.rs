@@ -49,11 +49,19 @@ pub fn build_display_grid_plan(
     if let (Some(c), Some(l), Some(u)) = (center, planned_lower, planned_upper) {
         let width_pct = if c > 0.0 { (u - l) / c } else { 0.0 };
         if width_pct > gc.max_grid_width_by_percent {
-            // Width too large, but we still output - let confidence handle it
+            tracing::warn!(
+                "grid width {:.1}% exceeds max {:.1}%, confidence will reflect this",
+                width_pct * 100.0,
+                gc.max_grid_width_by_percent * 100.0
+            );
         }
         if let Some(atr_val) = atr {
             if (u - l) / atr_val > gc.max_grid_width_by_atr {
-                // Width too large relative to ATR
+                tracing::warn!(
+                    "grid width {:.1}x ATR exceeds max {:.1}x",
+                    (u - l) / atr_val,
+                    gc.max_grid_width_by_atr
+                );
             }
         }
     }
@@ -73,9 +81,12 @@ pub fn build_display_grid_plan(
 }
 
 /// 生成可执行网格计划（含 GridLevel）。
+///
+/// - `capital_per_level`：每层分配的资金（计价币），用于计算 qty。不传则使用最小单位。
 pub fn build_executable_grid_plan(
     display: &DisplayGridPlan,
     constraints: Option<&ExchangeConstraints>,
+    capital_per_level: Option<Decimal>,
 ) -> ExecutableGridPlan {
     let Some(lower) = display.lower else {
         return ExecutableGridPlan {
@@ -109,15 +120,26 @@ pub fn build_executable_grid_plan(
     let mut total_capital = Decimal::ZERO;
     let mut executable_count = 0;
 
+    // 计算每层数量：如果有 capital_per_level，用它除以买价
+    let default_qty = capital_per_level.unwrap_or(Decimal::new(1, 3)); // 默认 0.001
+
     for i in 0..display.grid_count {
         let buy_price = lower + step * i as f64;
         let sell_price = buy_price + step;
 
+        // 动态 qty: capital / price
+        let qty = if let Some(&cp) = capital_per_level.as_ref() {
+            let price_dec = Decimal::try_from(buy_price).unwrap_or(Decimal::ONE);
+            if price_dec > Decimal::ZERO { cp / price_dec } else { default_qty }
+        } else {
+            default_qty
+        };
+
         let (buy_level, buy_exec) = make_grid_level(
-            OrderSide::Buy, buy_price, 0.001, constraints, // qty placeholder
+            OrderSide::Buy, buy_price, qty, constraints,
         );
         let (sell_level, sell_exec) = make_grid_level(
-            OrderSide::Sell, sell_price, 0.001, constraints,
+            OrderSide::Sell, sell_price, qty, constraints,
         );
 
         if buy_exec { executable_count += 1; }
@@ -142,21 +164,20 @@ pub fn build_executable_grid_plan(
 fn make_grid_level(
     side: OrderSide,
     raw_price: f64,
-    raw_qty: f64,
+    raw_qty: Decimal,
     constraints: Option<&ExchangeConstraints>,
 ) -> (GridLevel, bool) {
     let mut executable = true;
     let mut disabled_reason: Option<String> = None;
+    let raw_price_dec = Decimal::try_from(raw_price).unwrap_or(Decimal::ZERO);
 
     let (price, qty) = if let Some(c) = constraints {
-        let price_dec = Decimal::try_from(raw_price).unwrap_or(Decimal::ZERO);
         let tick = c.tick_size;
-        let rounded_price = (price_dec / tick).round() * tick;
+        let rounded_price = (raw_price_dec / tick).round() * tick;
         let rounded_price = rounded_price.round_dp(c.price_precision);
 
-        let qty_dec = Decimal::try_from(raw_qty).unwrap_or(Decimal::ZERO);
         let step = c.step_size;
-        let rounded_qty = (qty_dec / step).round() * step;
+        let rounded_qty = (raw_qty / step).round() * step;
         let rounded_qty = rounded_qty.round_dp(c.quantity_precision);
 
         if rounded_qty < c.min_qty {
@@ -171,10 +192,7 @@ fn make_grid_level(
 
         (rounded_price, rounded_qty)
     } else {
-        (
-            Decimal::try_from(raw_price).unwrap_or(Decimal::ZERO),
-            Decimal::try_from(raw_qty).unwrap_or(Decimal::ZERO),
-        )
+        (raw_price_dec, raw_qty)
     };
 
     let notional = price * qty;
@@ -182,7 +200,7 @@ fn make_grid_level(
     (
         GridLevel {
             side,
-            raw_price,
+            raw_price: raw_price_dec,
             price,
             raw_qty,
             qty,

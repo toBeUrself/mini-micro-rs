@@ -36,10 +36,18 @@ impl Analyzer {
         let rc = &self.config.risk;
         let dqc = &self.config.data_quality;
 
-        // 1. 拉取 K 线（尽量多取，用于指标 warmup）
+        // 1. 拉取 K 线（根据周期动态计算回拉窗口，满足 warmup 要求）
+        let interval_ms = crate::models::parse_interval_ms(interval);
+        let lookback_ms = if interval_ms > 0 {
+            // 至少回拉 warmup_bars 所需的时间跨度，再加 50% 冗余处理缺口
+            ic.structure_lookback.max(ic.percentile_window).max(150) as i64 * interval_ms * 3 / 2
+        } else {
+            1000 * 3600 * 24 * 30 // fallback: 30 days
+        };
+        let default_limit: i64 = 1000;
         let raw_klines = self
             .reader
-            .fetch_klines(source, symbol, interval, time.map(|t| t - 1000 * 3600 * 24 * 7), time, Some(500))
+            .fetch_klines(source, symbol, interval, time.map(|t| t - lookback_ms), time, Some(default_limit))
             .await
             .map_err(|e| format!("fetch klines failed: {e}"))?;
 
@@ -57,6 +65,7 @@ impl Analyzer {
         }
 
         // 3. 确定使用的 K 线：已闭合 K 线用于状态确认，未闭合只能观察
+        // SPEC红线：没有已闭合K线时，不得使用未闭合K线计算评分
         let closed_indices: Vec<usize> = klines
             .iter()
             .enumerate()
@@ -64,15 +73,24 @@ impl Analyzer {
             .map(|(i, _)| i)
             .collect();
 
-        let last_closed_idx = closed_indices.last().copied();
-        let last_idx = klines.len() - 1;
-        let use_idx = last_closed_idx.unwrap_or(last_idx);
-        let is_using_closed = last_closed_idx.is_some();
+        let last_closed_idx = match closed_indices.last().copied() {
+            Some(idx) => idx,
+            None => {
+                return Ok(build_wait_output(
+                    source, symbol, interval, &klines, &data_quality, &self.config,
+                    "无已闭合 K 线可用于状态确认",
+                ));
+            }
+        };
+        let use_idx = last_closed_idx;
+        let is_using_closed = true; // 确保使用已闭合K线
 
-        // 如果数据不足，快速返回 wait
-        if klines.len() < 60 {
+        // warmup 检查：使用更严格的 min_required_bars
+        let min_bars = ic.structure_lookback.max(60);
+        if klines.len() < min_bars {
             return Ok(build_wait_output(
-                source, symbol, interval, &klines, &data_quality, &self.config, "warmup 不满足",
+                source, symbol, interval, &klines, &data_quality, &self.config,
+                &format!("warmup 不满足: {} bars < {} required", klines.len(), min_bars),
             ));
         }
 
@@ -130,8 +148,14 @@ impl Analyzer {
             donchian_upper: extract_vals(&donchian_result.upper, "Donchian upper", &mut unavailable_fields),
             donchian_lower: extract_vals(&donchian_result.lower, "Donchian lower", &mut unavailable_fields),
             availability: IndicatorAvailability {
+                // 检查所有 Phase 1 核心指标在 use_idx 处是否可用
                 ready: macd_result.hist.get(use_idx).and_then(|h| h.value()).is_some()
-                    && atr_result.atr.get(use_idx).and_then(|a| a.value()).is_some(),
+                    && atr_result.atr.get(use_idx).and_then(|a| a.value()).is_some()
+                    && boll_result.mid.get(use_idx).and_then(|m| m.value()).is_some()
+                    && adx_result.adx.get(use_idx).and_then(|a| a.value()).is_some()
+                    && rsi_result.get(use_idx).and_then(|r| r.value()).is_some()
+                    && ma_result.ma20.get(use_idx).and_then(|m| m.value()).is_some()
+                    && vol_ratio_result.get(use_idx).and_then(|v| v.value()).is_some(),
                 min_required_bars: 150,
                 warmup_bars: 1000,
                 unavailable_fields: unavailable_fields.clone(),
@@ -140,20 +164,35 @@ impl Analyzer {
 
         let indicator_ready = ind_results.availability.ready;
 
-        // 7. 评分
-        let (raw_scores, score_breakdown) = scoring::compute_raw_scores(
-            &ind_results,
-            use_idx,
-            ic,
-            sc,
-            self.config.features.enable_score_conflict_adjustment,
-        );
+        // 7. 评分：在所有已闭合 K 线上逐根计算 raw_scores，然后 EMA 平滑
+        let mut raw_scores_seq: Vec<Scores> = Vec::with_capacity(closed_indices.len());
+        let mut last_breakdown: ScoreBreakdown = ScoreBreakdown { range: vec![], up: vec![], down: vec![] };
+        for &ci in &closed_indices {
+            let (rs, sb) = scoring::compute_raw_scores(
+                &ind_results, ci, ic, sc,
+                self.config.features.enable_score_conflict_adjustment,
+            );
+            if ci == use_idx {
+                last_breakdown = sb;
+            }
+            raw_scores_seq.push(rs);
+        }
+        let score_breakdown = last_breakdown;
 
-        // 平滑评分：在整个已闭合 K 线序列上计算
-        // For now, we compute a single snapshot
-        let smoothed_scores = raw_scores.clone();
-        let prev_scores = Scores::default(); // simplified
-        let momentum = scoring::score_momentum(&raw_scores, &prev_scores);
+        // 最新一根已闭合K线的评分
+        let raw_scores = raw_scores_seq.last().cloned().unwrap_or_default();
+
+        // 评分平滑：对整个已闭合K线序列 EMA 平滑
+        let smoothed_seq = scoring::smooth_scores(&raw_scores_seq, ic.score_smooth_period);
+        let smoothed_scores = smoothed_seq.last().cloned().unwrap_or_else(|| raw_scores.clone());
+
+        // 评分动能：倒数第二根 vs 最后一根已闭合K线的平滑评分
+        let prev_smoothed = if smoothed_seq.len() >= 2 {
+            smoothed_seq[smoothed_seq.len() - 2].clone()
+        } else {
+            Scores::default()
+        };
+        let momentum = scoring::score_momentum(&smoothed_scores, &prev_smoothed);
 
         // 8. 状态机
         let mut ctx = state_machine::new_state_context();
@@ -171,15 +210,19 @@ impl Analyzer {
             sc,
             self.config.features.enable_fake_breakout_filter,
             &closed_klines_for_sm,
+            &ind_results.volume_ratio,
+            &ind_results.adx,
+            ind_results.boll_upper.last().copied().filter(|v| v.is_finite()),
+            ind_results.boll_lower.last().copied().filter(|v| v.is_finite()),
         );
 
         let state = transition.final_state;
         let state_phase = transition.final_state_phase;
 
-        // 9. RiskOverride 评估
-        let risk_override = risk::evaluate_override(&data_quality, None, rc);
+        // 9. RiskOverride 评估（仅数据质量+指标可用性，账户硬止损由外部传入）
+        let risk_override = risk::evaluate_override(&data_quality, indicator_ready);
 
-        // 10. RiskDecision
+        // 10. RiskDecision (默认 spot 市场)
         let risk_decision = risk::build_risk_decision(
             state,
             risk_override,
@@ -187,6 +230,7 @@ impl Analyzer {
             None,
             rc,
             self.config.features.enable_exchange_constraints,
+            MarketType::Spot,
         );
 
         // 11. Confidence
@@ -298,7 +342,7 @@ impl Analyzer {
         let higher = if snapshots.len() > 2 { Some(&snapshots[0]) } else { None };
         let lower = if snapshots.len() > 2 { Some(&snapshots[2]) } else { None };
 
-        let (merged_state, merged_phase, reasons) =
+        let (merged_state, merged_phase, reasons, _confidence_mod) =
             multi_tf::merge_multi_timeframe(higher, middle, lower);
 
         // 构建合并后的风险决策
@@ -356,6 +400,7 @@ impl Analyzer {
             &risk_decision,
             &display_grid,
             reasons,
+            &self.config,
         ))
     }
 }

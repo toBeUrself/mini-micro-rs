@@ -66,12 +66,16 @@ pub fn validate_and_clean(
             || k.low > k.close
         {
             invalid_count += 1;
-            if let Some(qv) = k.quote_volume {
-                if !qv.is_finite() || qv < 0.0 {
-                    invalid_count += 1;
-                }
-            }
             continue;
+        }
+        // 独立检查 quote_volume，不影响 invalid_count（不重复计数）
+        if let Some(qv) = k.quote_volume {
+            if !qv.is_finite() || qv < 0.0 {
+                issues.push(format!(
+                    "kline at open_time {} has invalid quote_volume, marking as degraded",
+                    k.open_time
+                ));
+            }
         }
         valid.push(k);
     }
@@ -134,7 +138,7 @@ pub fn validate_and_clean(
         i = j + 1;
     }
     if duplicates > 0 {
-        // deduped may have fewer, recount
+        issues.push(format!("{duplicates} duplicate klines removed"));
     }
 
     // 4. 缺失 K 线检测
@@ -170,12 +174,12 @@ pub fn validate_and_clean(
     // 5. 闭合 K 线识别
     let has_unclosed = deduped.iter().any(|k| !k.is_closed);
 
-    // 6. 延迟检测
+    // 6. 延迟检测：使用预期 close_time（open_time + interval_ms）
     let latest_delay = deduped
         .last()
         .map(|k| {
-            let _expected_next = k.open_time + interval_ms;
-            (now_ms - k.open_time).max(0)
+            let expected_close = k.open_time + interval_ms;
+            (now_ms - expected_close).max(0)
         })
         .unwrap_or(0);
 
@@ -261,6 +265,8 @@ mod tests {
             close: (high + low) / 2.0,
             volume: 100.0,
             quote_volume: None,
+            close_time: None,
+            trade_count: None,
             is_closed,
         }
     }

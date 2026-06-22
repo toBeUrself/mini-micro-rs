@@ -76,6 +76,8 @@ impl KlineApiItem {
                 .map(|v| v.parse::<f64>())
                 .transpose()
                 .map_err(|e| KlineReaderError::InvalidData(format!("invalid quote_volume: {e}")))?,
+            close_time: None,  // not available from current API response
+            trade_count: None, // not available from current API response
             is_closed: self.is_complete.unwrap_or(true),
         })
     }
@@ -145,6 +147,16 @@ impl KlineReader {
         }
 
         let api_resp: KlinesApiResponse = resp.json().await?;
+
+        // 校验 API 返回的 interval 与请求一致
+        if api_resp.interval.to_ascii_lowercase() != interval.to_ascii_lowercase() {
+            tracing::warn!(
+                "API returned interval {} but requested {}, using requested",
+                api_resp.interval,
+                interval
+            );
+        }
+
         let interval_str = interval.to_string();
         let klines: Result<Vec<_>, _> = api_resp
             .items

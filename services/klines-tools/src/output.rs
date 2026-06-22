@@ -73,9 +73,14 @@ pub fn build_multi_tf_output(
     risk_decision: &RiskDecision,
     grid_plan: &DisplayGridPlan,
     reasons: Vec<String>,
+    config: &KlinesToolsConfig,
 ) -> MultiTfAnalysisOutput {
     MultiTfAnalysisOutput {
         schema_version: "1.2".into(),
+        model_version: "rule-v1".into(),
+        config_version: "grid-analysis-v1.0.3".into(),
+        config_hash: Some(config.config_hash()),
+        enabled_features: config.enabled_features(),
         source: source.to_string(),
         symbol: symbol.to_string(),
         generated_at: chrono::Utc::now().timestamp_millis(),

@@ -29,6 +29,10 @@ pub struct Kline {
     pub volume: f64,
     /// 成交额（计价币），可选。
     pub quote_volume: Option<f64>,
+    /// 收盘时间（毫秒时间戳），可选。
+    pub close_time: Option<i64>,
+    /// 成交笔数，可选。
+    pub trade_count: Option<u64>,
     /// 是否已闭合。
     pub is_closed: bool,
 }
@@ -358,7 +362,7 @@ pub struct RiskDecision {
     pub allowed_grid_modes: Vec<AllowedGridMode>,
     pub order_permission: OrderPermission,
     pub position_action: PositionAction,
-    pub reduce_position_ratio: Option<f64>,
+    pub reduce_position_ratio: Option<Decimal>,
     pub reduce_reference: Option<String>,
     pub require_manual_confirm: bool,
     pub action_ttl_ms: i64,
@@ -453,11 +457,12 @@ pub enum OrderSide {
 #[derive(Debug, Clone, Serialize)]
 pub struct GridLevel {
     pub side: OrderSide,
-    /// 原始价格（f64 计算值）。
-    pub raw_price: f64,
+    /// 原始价格（Decimal）。
+    pub raw_price: Decimal,
     /// 按 tick_size 取整后的 Decimal 价格。
     pub price: Decimal,
-    pub raw_qty: f64,
+    /// 原始数量（Decimal）。
+    pub raw_qty: Decimal,
     /// 按 step_size 取整后的 Decimal 数量。
     pub qty: Decimal,
     pub notional: Decimal,
@@ -581,6 +586,10 @@ pub struct AnalysisOutput {
 #[derive(Debug, Clone, Serialize)]
 pub struct MultiTfAnalysisOutput {
     pub schema_version: String,
+    pub model_version: String,
+    pub config_version: String,
+    pub config_hash: Option<String>,
+    pub enabled_features: Vec<String>,
     pub source: String,
     pub symbol: String,
     pub generated_at: i64,

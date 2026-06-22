@@ -5,6 +5,19 @@
 
 use crate::models::{ConfidenceBreakdown, DataQuality, IndicatorAvailability, MarketState, StatePhase};
 
+/// 评分差值映射到 evidence 的分母。
+/// 例如 range_score 比 up/down 高 30 分 → evidence ≈ 1.0。
+const EVIDENCE_DIVISOR: f64 = 30.0;
+
+/// 指标不可用时的衰减底数：每个不可用字段将因子乘以该值。
+const INDICATOR_POWER_BASE: f64 = 0.8;
+/// 指标衰减的下限，避免因子降至 0。
+const INDICATOR_POWER_MIN: f64 = 0.3;
+
+/// Wait 状态的默认 state_evidence。
+/// 无明确方向信号时使用此保守值。
+const WAIT_EVIDENCE: f64 = 0.2;
+
 /// 计算置信度分解。
 ///
 /// - `state_evidence`：基于评分差值（状态信号多清晰）
@@ -25,17 +38,17 @@ pub fn compute_confidence(
     let evidence = match state {
         MarketState::RangeGrid => {
             let margin = (range - up.max(down)).max(0.0);
-            (margin / 30.0).clamp(0.0, 1.0)
+            (margin / EVIDENCE_DIVISOR).clamp(0.0, 1.0)
         }
         MarketState::UpBreakWarning | MarketState::UptrendFollow => {
             let margin = (up - range.max(down)).max(0.0);
-            (margin / 30.0).clamp(0.0, 1.0)
+            (margin / EVIDENCE_DIVISOR).clamp(0.0, 1.0)
         }
         MarketState::DownBreakWarning | MarketState::DowntrendRisk => {
             let margin = (down - range.max(up)).max(0.0);
-            (margin / 30.0).clamp(0.0, 1.0)
+            (margin / EVIDENCE_DIVISOR).clamp(0.0, 1.0)
         }
-        MarketState::Wait => 0.2,
+        MarketState::Wait => WAIT_EVIDENCE,
     };
 
     let dq_factor = data_quality.quality_score.clamp(0.0, 1.0);
@@ -44,7 +57,7 @@ pub fn compute_confidence(
         if indicator_avail.unavailable_fields.is_empty() {
             1.0
         } else {
-            0.8_f64.powf(indicator_avail.unavailable_fields.len() as f64).max(0.3)
+            INDICATOR_POWER_BASE.powf(indicator_avail.unavailable_fields.len() as f64).max(INDICATOR_POWER_MIN)
         }
     } else {
         0.2
