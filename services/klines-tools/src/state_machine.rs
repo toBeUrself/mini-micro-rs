@@ -1,7 +1,7 @@
 //! 六状态状态机与假突破过滤器。
 //!
 //! 状态迁移优先级（由高到低）：
-//! 1. RiskOverride / EmergencyStop
+//! 1. RiskOverride / EmergencyStop 由 risk layer 覆盖执行动作，不改写 MarketState
 //! 2. 数据质量严重不足 → Wait
 //! 3. confirmed downtrend_risk
 //! 4. confirmed down_break_warning
@@ -11,17 +11,9 @@
 //! 8. wait
 
 use crate::config::StateConfig;
-use crate::models::{MarketState, StatePhase, StateContext, StateTransition, Scores, DataQuality};
+use crate::models::{DataQuality, MarketState, Scores, StateContext, StatePhase, StateTransition};
 
 /// 状态机推进主函数。
-///
-/// - `smoothed_scores`：经过平滑的三维评分
-/// - `data_quality`：数据质量评估
-/// - `indicator_ready`：核心指标是否就绪
-/// - `ctx`：前序状态上下文
-/// - `sc`：状态配置
-/// - `enable_fake_breakout`：是否启用假突破过滤
-/// - `klines_closed`：已闭合 K 线数组（用于假突破判断）
 pub fn advance_state(
     smoothed_scores: &Scores,
     data_quality: &DataQuality,
@@ -29,11 +21,10 @@ pub fn advance_state(
     ctx: &mut StateContext,
     sc: &StateConfig,
     enable_fake_breakout: bool,
-    klines_closed: &[(i64, f64, f64, f64, f64)], // (open_time, open, high, low, close) for closed klines
+    klines_closed: &[(i64, f64, f64, f64, f64)],
 ) -> StateTransition {
     let mut reasons: Vec<String> = Vec::new();
 
-    // ── P0：数据质量严重不足 ──────────────────────────────────────────
     if !data_quality.warmup_satisfied || data_quality.quality_score < 0.5 {
         let transition = StateTransition {
             previous_state: ctx.previous_state,
@@ -53,7 +44,6 @@ pub fn advance_state(
         return transition;
     }
 
-    // ── P0：指标不就绪 ──────────────────────────────────────────────
     if !indicator_ready {
         let transition = StateTransition {
             previous_state: ctx.previous_state,
@@ -72,14 +62,10 @@ pub fn advance_state(
         return transition;
     }
 
-    // ── 冷却期推进 ──────────────────────────────────────────────────
     if ctx.cooldown_remaining_bars > 0 {
         ctx.cooldown_remaining_bars -= 1;
         if ctx.cooldown_remaining_bars > 0 {
-            reasons.push(format!(
-                "冷却中，剩余 {} bars",
-                ctx.cooldown_remaining_bars
-            ));
+            reasons.push(format!("冷却中，剩余 {} bars", ctx.cooldown_remaining_bars));
             return StateTransition {
                 previous_state: ctx.previous_state,
                 candidate_state: None,
@@ -97,11 +83,8 @@ pub fn advance_state(
     let up = smoothed_scores.up_score;
     let down = smoothed_scores.down_score;
 
-    // ── 多空冲突处理 ──────────────────────────────────────────────────
     if up >= sc.trend_candidate && down >= sc.trend_candidate {
-        reasons.push(format!(
-            "多空评分冲突: up={up:.0}, down={down:.0} → wait"
-        ));
+        reasons.push(format!("多空评分冲突: up={up:.0}, down={down:.0} → wait"));
         let transition = StateTransition {
             previous_state: ctx.previous_state,
             candidate_state: None,
@@ -119,11 +102,9 @@ pub fn advance_state(
         return transition;
     }
 
-    // ── 确定候选状态 ──────────────────────────────────────────────────
     let candidate = determine_candidate_state(range, up, down, sc);
     reasons.push(format!("候选状态: {:?}", candidate));
 
-    // ── 确认期逻辑 ──────────────────────────────────────────────────
     if Some(candidate) == ctx.candidate_state {
         ctx.candidate_bars += 1;
     } else {
@@ -132,7 +113,6 @@ pub fn advance_state(
     }
     reasons.push(format!("候选计数: {}/{}", ctx.candidate_bars, sc.confirm_bars));
 
-    // ── 候选状态评分下破退出线 → 清零候选 ────────────────────────────
     let candidate_invalid = match candidate {
         MarketState::RangeGrid => range < sc.range_exit,
         MarketState::UpBreakWarning | MarketState::UptrendFollow => up < sc.warning_exit,
@@ -158,13 +138,9 @@ pub fn advance_state(
         return transition;
     }
 
-    // ── 确认判断 ──────────────────────────────────────────────────────
     if ctx.candidate_bars >= sc.confirm_bars {
-        // ── 假突破过滤（Phase 2） ──────────────────────────────────────
         if enable_fake_breakout {
-            if let Some(override_state) = apply_fake_breakout_filter(
-                candidate, klines_closed, sc,
-            ) {
+            if let Some(override_state) = apply_fake_breakout_filter(candidate, klines_closed, sc) {
                 reasons.push(format!("假突破过滤触发: → {:?}", override_state));
                 let transition = StateTransition {
                     previous_state: ctx.previous_state,
@@ -184,19 +160,7 @@ pub fn advance_state(
             }
         }
 
-        // ── 正常确认 ──────────────────────────────────────────────────
-        let prev_grid_exit = matches!(ctx.previous_state, MarketState::DowntrendRisk | MarketState::UptrendFollow);
-        let _cooldown = if prev_grid_exit {
-            sc.cooldown_bars_after_stop_loss
-        } else {
-            match candidate {
-                MarketState::DowntrendRisk | MarketState::UptrendFollow => sc.cooldown_bars_after_stop_loss,
-                _ => sc.cooldown_bars_after_exit,
-            }
-        };
-
         reasons.push(format!("确认状态: {:?}", candidate));
-
         let transition = StateTransition {
             previous_state: ctx.previous_state,
             candidate_state: Some(candidate),
@@ -210,52 +174,44 @@ pub fn advance_state(
 
         ctx.previous_state = candidate;
         ctx.previous_state_phase = StatePhase::Confirmed;
+        ctx.previous_state_since = klines_closed.last().map(|k| k.0).unwrap_or(ctx.previous_state_since);
         ctx.candidate_state = None;
         ctx.candidate_bars = 0;
-
-        transition
-    } else {
-        // ── 处于候选期，保持前一状态或 candidate ──────────────────────
-        let (final_state, phase) = if ctx.previous_state == MarketState::Wait {
-            (candidate, StatePhase::Candidate)
-        } else {
-            (ctx.previous_state, StatePhase::Confirmed)
-        };
-
-        let transition = StateTransition {
-            previous_state: ctx.previous_state,
-            candidate_state: Some(candidate),
-            final_state,
-            final_state_phase: phase,
-            transition_type: "candidate".into(),
-            candidate_bars: ctx.candidate_bars,
-            cooldown_remaining_bars: ctx.cooldown_remaining_bars,
-            reasons,
-        };
-
-        ctx.previous_state = final_state;
-        ctx.previous_state_phase = phase;
-
-        transition
+        return transition;
     }
+
+    // 候选未确认：如果已有 confirmed 状态，则保持旧 confirmed 状态；否则输出 candidate。
+    let (final_state, phase) = if ctx.previous_state_phase == StatePhase::Confirmed
+        && ctx.previous_state != MarketState::Wait
+        && ctx.previous_state != candidate
+    {
+        (ctx.previous_state, StatePhase::Confirmed)
+    } else {
+        (candidate, StatePhase::Candidate)
+    };
+
+    let transition = StateTransition {
+        previous_state: ctx.previous_state,
+        candidate_state: Some(candidate),
+        final_state,
+        final_state_phase: phase,
+        transition_type: "candidate".into(),
+        candidate_bars: ctx.candidate_bars,
+        cooldown_remaining_bars: ctx.cooldown_remaining_bars,
+        reasons,
+    };
+
+    ctx.previous_state = final_state;
+    ctx.previous_state_phase = phase;
+    transition
 }
 
-/// 根据评分确定候选状态。
 fn determine_candidate_state(range: f64, up: f64, down: f64, sc: &StateConfig) -> MarketState {
-    // downtrend_risk 优先（风险优先原则）
-    if down >= sc.trend_confirm {
-        return MarketState::DowntrendRisk;
-    }
     if down >= sc.trend_candidate {
         return MarketState::DowntrendRisk;
     }
     if down >= sc.warning_enter {
         return MarketState::DownBreakWarning;
-    }
-
-    // uptrend_follow
-    if up >= sc.trend_confirm {
-        return MarketState::UptrendFollow;
     }
     if up >= sc.trend_candidate {
         return MarketState::UptrendFollow;
@@ -263,54 +219,36 @@ fn determine_candidate_state(range: f64, up: f64, down: f64, sc: &StateConfig) -
     if up >= sc.warning_enter {
         return MarketState::UpBreakWarning;
     }
-
-    // range_grid
-    if range >= sc.range_enter {
+    if range >= sc.range_enter && up < sc.warning_enter && down < sc.warning_enter {
         return MarketState::RangeGrid;
     }
-
-    // default
     MarketState::Wait
 }
 
-/// 假突破过滤器。
-///
-/// 检查 candidate 是否应被判定为假突破。
 fn apply_fake_breakout_filter(
     candidate: MarketState,
     klines_closed: &[(i64, f64, f64, f64, f64)],
     sc: &StateConfig,
 ) -> Option<MarketState> {
     let window = sc.fake_breakout_window;
-    if klines_closed.len() < window {
+    if klines_closed.len() < window || window == 0 {
         return None;
     }
-
     let recent = &klines_closed[klines_closed.len() - window..];
 
     match candidate {
         MarketState::UpBreakWarning | MarketState::UptrendFollow => {
-            // 向上假突破：看最近几根 K 线是否回到区间内
-            // 如果最近 K 线的 low 低于前高的一个比例，或者 close 大幅回落
-            let highs: Vec<f64> = recent.iter().map(|(_, _, h, _, _)| *h).collect();
-            let closes: Vec<f64> = recent.iter().map(|(_, _, _, _, c)| *c).collect();
-            let max_high = highs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-            // 如果最近收盘价低于窗口最高价的 98% → 可能假突破
-            if let Some(&last_close) = closes.last() {
-                if last_close < max_high * 0.98 {
+            let max_high = recent.iter().map(|(_, _, h, _, _)| *h).fold(f64::NEG_INFINITY, f64::max);
+            if let Some(last_close) = recent.last().map(|(_, _, _, _, c)| *c) {
+                if max_high.is_finite() && last_close < max_high * 0.98 {
                     return Some(MarketState::RangeGrid);
                 }
             }
         }
         MarketState::DownBreakWarning | MarketState::DowntrendRisk => {
-            let lows: Vec<f64> = recent.iter().map(|(_, _, _, l, _)| *l).collect();
-            let closes: Vec<f64> = recent.iter().map(|(_, _, _, _, c)| *c).collect();
-            let min_low = lows.iter().cloned().fold(f64::INFINITY, f64::min);
-
-            // 如果最近收盘价高于窗口最低价的 102% → 可能假突破
-            if let Some(&last_close) = closes.last() {
-                if last_close > min_low * 1.02 {
+            let min_low = recent.iter().map(|(_, _, _, l, _)| *l).fold(f64::INFINITY, f64::min);
+            if let Some(last_close) = recent.last().map(|(_, _, _, _, c)| *c) {
+                if min_low.is_finite() && last_close > min_low * 1.02 {
                     return Some(MarketState::RangeGrid);
                 }
             }
@@ -321,7 +259,6 @@ fn apply_fake_breakout_filter(
     None
 }
 
-/// 初始化状态上下文。
 pub fn new_state_context() -> StateContext {
     StateContext::default()
 }
@@ -389,14 +326,10 @@ mod tests {
         let dq = make_dq(true, 1.0);
         let sc = StateConfig::default();
         let mut ctx = new_state_context();
-
-        // First 2 bars: candidate
         for _ in 0..2 {
-            advance_state(&scores, &dq, true, &mut ctx, &sc, false, &[]);
+            let t = advance_state(&scores, &dq, true, &mut ctx, &sc, false, &[]);
+            assert_eq!(t.final_state_phase, StatePhase::Candidate);
         }
-        assert_eq!(ctx.candidate_bars, 2);
-
-        // 3rd bar: confirmed
         let transition = advance_state(&scores, &dq, true, &mut ctx, &sc, false, &[]);
         assert_eq!(transition.final_state, MarketState::RangeGrid);
         assert_eq!(transition.final_state_phase, StatePhase::Confirmed);
@@ -411,6 +344,7 @@ mod tests {
         let mut ctx = new_state_context();
         let transition = advance_state(&scores, &dq, true, &mut ctx, &sc, false, &[]);
         assert_eq!(transition.final_state, MarketState::DowntrendRisk);
+        assert_eq!(transition.final_state_phase, StatePhase::Candidate);
     }
 
     #[test]

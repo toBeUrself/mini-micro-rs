@@ -7,6 +7,7 @@ use crate::models::{MarketState, StatePhase, TimeframeSnapshotRef};
 /// 时间对齐规则：
 /// - 所有状态确认只使用各周期最新已闭合 K 线。
 /// - lower timeframe 只能引用 close_time <= T 的 higher/middle 分析结果。
+/// - 如果传入 lower，则以 lower.close_time 为 anchor 校验 higher/middle。
 ///
 /// 返回合并后的状态和决策。
 pub fn merge_multi_timeframe(
@@ -15,6 +16,25 @@ pub fn merge_multi_timeframe(
     lower: Option<&TimeframeSnapshotRef>,
 ) -> (MarketState, StatePhase, Vec<String>) {
     let mut reasons: Vec<String> = Vec::new();
+
+    if let Some(l) = lower {
+        if middle.close_time > l.close_time {
+            reasons.push(format!(
+                "middle({}) close_time {} is newer than lower anchor {} → wait",
+                middle.interval, middle.close_time, l.close_time
+            ));
+            return (MarketState::Wait, StatePhase::Observing, reasons);
+        }
+        if let Some(h) = higher {
+            if h.close_time > l.close_time {
+                reasons.push(format!(
+                    "higher({}) close_time {} is newer than lower anchor {} → wait",
+                    h.interval, h.close_time, l.close_time
+                ));
+                return (MarketState::Wait, StatePhase::Observing, reasons);
+            }
+        }
+    }
 
     // P0: higher timeframe 已确认下跌风险 → hard block
     if let Some(h) = higher {
@@ -30,12 +50,7 @@ pub fn merge_multi_timeframe(
                 "higher({}) confirmed down_break_warning → soft_block",
                 h.interval
             ));
-        }
-        if h.state == MarketState::UptrendFollow && h.state_phase == StatePhase::Confirmed {
-            reasons.push(format!(
-                "higher({}) confirmed uptrend → only uptrend_follow allowed",
-                h.interval
-            ));
+            return (MarketState::DownBreakWarning, StatePhase::Confirmed, reasons);
         }
     }
 
@@ -56,9 +71,10 @@ pub fn merge_multi_timeframe(
         return (MarketState::DownBreakWarning, StatePhase::Confirmed, reasons);
     }
 
-    // P2: higher uptrend → only trend follow
+    // P2: higher uptrend + middle range → only trend follow
     if let Some(h) = higher {
-        if h.state == MarketState::UptrendFollow && h.state_phase == StatePhase::Confirmed
+        if h.state == MarketState::UptrendFollow
+            && h.state_phase == StatePhase::Confirmed
             && middle.state == MarketState::RangeGrid
         {
             reasons.push("higher uptrend + middle range → 只允许趋势跟随".into());
@@ -82,6 +98,9 @@ pub fn merge_multi_timeframe(
     if middle.state == MarketState::RangeGrid && middle.state_phase == StatePhase::Confirmed {
         reasons.push("middle range_grid confirmed → 允许普通网格".into());
         (MarketState::RangeGrid, StatePhase::Confirmed, reasons)
+    } else if middle.state_phase == StatePhase::Candidate {
+        reasons.push(format!("middle state {:?} is candidate → wait", middle.state));
+        (MarketState::Wait, StatePhase::Observing, reasons)
     } else {
         reasons.push(format!("middle state {:?} → wait", middle.state));
         (MarketState::Wait, StatePhase::Observing, reasons)
