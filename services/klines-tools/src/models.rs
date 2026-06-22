@@ -146,17 +146,11 @@ pub struct ScoreMomentum {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MarketState {
-    /// 方向不清晰或数据质量不足。
     Wait,
-    /// 震荡条件成立，允许普通震荡网格。
     RangeGrid,
-    /// 震荡可能向上失效。
     UpBreakWarning,
-    /// 上涨趋势确认，关闭普通震荡网格。
     UptrendFollow,
-    /// 震荡可能向下失效。
     DownBreakWarning,
-    /// 下跌趋势风险确认，关闭普通网格。
     DowntrendRisk,
 }
 
@@ -453,11 +447,12 @@ pub enum OrderSide {
 #[derive(Debug, Clone, Serialize)]
 pub struct GridLevel {
     pub side: OrderSide,
-    /// 原始价格（f64 计算值）。
-    pub raw_price: f64,
+    /// 原始价格（转换为 Decimal 后保存，避免执行契约暴露 f64）。
+    pub raw_price: Decimal,
     /// 按 tick_size 取整后的 Decimal 价格。
     pub price: Decimal,
-    pub raw_qty: f64,
+    /// 原始数量（转换为 Decimal 后保存）。
+    pub raw_qty: Decimal,
     /// 按 step_size 取整后的 Decimal 数量。
     pub qty: Decimal,
     pub notional: Decimal,
@@ -597,6 +592,9 @@ pub struct MultiTfAnalysisOutput {
 /// 指标计算结果集，用于在评分模块和状态机之间传递。
 #[derive(Debug, Clone)]
 pub struct IndicatorResults {
+    pub close: Vec<f64>,
+    pub high: Vec<f64>,
+    pub low: Vec<f64>,
     pub boll_upper: Vec<f64>,
     pub boll_mid: Vec<f64>,
     pub boll_lower: Vec<f64>,
@@ -642,7 +640,7 @@ mod tests {
     fn test_market_state_serde() {
         let state = MarketState::RangeGrid;
         let json = serde_json::to_string(&state).unwrap();
-        assert_eq!(json, r#""range_grid""#);
+        assert_eq!(json, r#"\"range_grid\""#);
         let back: MarketState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, MarketState::RangeGrid);
     }
