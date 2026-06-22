@@ -203,28 +203,51 @@ impl Analyzer {
         // 8. 状态机：从持久化存储获取上下文，使 confirm_bars/cooldown 跨请求生效
         let config_hash = self.config.config_hash();
         let mut ctx = self.state_store.get_or_create(source, symbol, interval, &config_hash);
+        let current_open_time = klines[use_idx].open_time;
         let closed_klines_for_sm: Vec<(i64, f64, f64, f64, f64)> = klines
             .iter()
             .filter(|k| k.is_closed)
             .map(|k| (k.open_time, k.open, k.high, k.low, k.close))
             .collect();
 
-        let transition = state_machine::advance_state(
-            &smoothed_scores,
-            &data_quality,
-            indicator_ready,
-            &mut ctx,
-            sc,
-            self.config.features.enable_fake_breakout_filter,
-            &closed_klines_for_sm,
-            &ind_results.volume_ratio,
-            &ind_results.adx,
-            ind_results.boll_upper.last().copied().filter(|v| v.is_finite()),
-            ind_results.boll_lower.last().copied().filter(|v| v.is_finite()),
-        );
-
-        let state = transition.final_state;
-        let state_phase = transition.final_state_phase;
+        // 防止同一根已闭合 K 线被重复推进状态机（API 重复调用污染 candidate_bars / cooldown）
+        let (state, state_phase, transition) =
+            if ctx.last_processed_open_time == Some(current_open_time) {
+                // 已处理过这根 K 线，跳过状态机推进，复用上次结果
+                let noop_transition = StateTransition {
+                    previous_state: ctx.previous_state,
+                    candidate_state: ctx.candidate_state,
+                    final_state: ctx.previous_state,
+                    final_state_phase: ctx.previous_state_phase,
+                    transition_type: "replay_skipped".into(),
+                    candidate_bars: ctx.candidate_bars,
+                    cooldown_remaining_bars: ctx.cooldown_remaining_bars,
+                    reasons: vec![format!(
+                        "open_time={} 已处理过，跳过状态推进",
+                        current_open_time
+                    )],
+                };
+                (ctx.previous_state, ctx.previous_state_phase, noop_transition)
+            } else {
+                // 新的已闭合 K 线，推进状态机
+                ctx.last_processed_open_time = Some(current_open_time);
+                let t = state_machine::advance_state(
+                    &smoothed_scores,
+                    &data_quality,
+                    indicator_ready,
+                    &mut ctx,
+                    sc,
+                    self.config.features.enable_fake_breakout_filter,
+                    &closed_klines_for_sm,
+                    &ind_results.volume_ratio,
+                    &ind_results.adx,
+                    ind_results.boll_upper.last().copied().filter(|v| v.is_finite()),
+                    ind_results.boll_lower.last().copied().filter(|v| v.is_finite()),
+                );
+                let s = t.final_state;
+                let sp = t.final_state_phase;
+                (s, sp, t)
+            };
 
         // 持久化 StateContext，使候选计数/冷却期跨请求生效
         self.state_store.save(source, symbol, interval, &config_hash, &ctx);

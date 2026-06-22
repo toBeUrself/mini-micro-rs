@@ -211,6 +211,9 @@ pub struct StateContext {
     pub last_transition_time: Option<i64>,
     pub last_grid_exit_time: Option<i64>,
     pub last_stop_loss_time: Option<i64>,
+    /// 最后一次推进状态机时使用的已闭合 K 线 open_time。
+    /// 用于防止同一根 K 线被重复推进 candidate_bars / cooldown。
+    pub last_processed_open_time: Option<i64>,
 }
 
 impl Default for StateContext {
@@ -226,6 +229,7 @@ impl Default for StateContext {
             last_transition_time: None,
             last_grid_exit_time: None,
             last_stop_loss_time: None,
+            last_processed_open_time: None,
         }
     }
 }
